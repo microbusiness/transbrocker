@@ -1,0 +1,105 @@
+# docker-compose.yml
+services:
+  zookeeper:
+    restart: always
+    image: docker.io/bitnami/zookeeper:3.9
+    ports:
+      - "2181:2181"
+    volumes:
+      - "zookeeper-volume:/bitnami"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    networks:
+      - trans_net
+  kafka:
+    restart: always
+    image: docker.io/bitnami/kafka:3.4
+    ports:
+      - "9093:9093"
+      - "9092:9092"
+    volumes:
+      - "kafka-volume:/bitnami"
+    environment:
+      - KAFKA_CFG_BROKER_ID=1
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=CLIENT://:9092,EXTERNAL://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=CLIENT://kafka:9092,EXTERNAL://localhost:9093
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=CLIENT
+    depends_on:
+      - zookeeper
+    networks:
+      - trans_net
+  nats:
+    image: nats:latest
+    ports:
+      - "8222:8222"
+      - "4222:4222"
+    command: "--cluster_name NATS --cluster nats://0.0.0.0:6222 --http_port 8222 "
+    networks:
+      - trans_net
+  transbroker:
+    build:
+      no_cache: true
+      context: .
+      dockerfile: deploy/transbrocker/Dockerfile
+    restart: always
+    ports:
+      - "8091:${HTTP_PORT}"
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_SUBJECT: ${NATS_SUBJECT}
+      KAFKA_URL: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      HTTP_ADDR: "${HTTP_ADDR}"
+      HTTP_PORT: "${HTTP_PORT}"
+      CACHE_MAX_COUNT: 1000
+      CLEANUP_INTERVAL: 120
+    depends_on:
+      - kafka
+      - nats
+    networks:
+      - trans_net
+  trans-ya-1:
+    build:
+      no_cache: true
+      context: .
+      dockerfile: deploy/transya/Dockerfile
+    restart: always
+    environment:
+      - FOLDER_ID=${FOLDER_ID}
+      - API_KEY=${API_KEY}
+      - NATS_URL=nats://nats:4222
+      - KAFKA_URL=kafka:9092
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+    depends_on:
+      - kafka
+      - nats
+    networks:
+      - trans_net
+  trans-ya-2:
+    build:
+      no_cache: true
+      context: .
+      dockerfile: deploy/transya/Dockerfile
+    restart: always
+    environment:
+      - FOLDER_ID=${FOLDER_ID}
+      - API_KEY=${API_KEY}
+      - NATS_URL=nats://nats:4222
+      - KAFKA_URL=kafka:9092
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+    depends_on:
+      - kafka
+      - nats
+    networks:
+      - trans_net
+volumes:
+  kafka-volume:
+  zookeeper-volume:
+  pgdata:
+    driver: local
+networks:
+  trans_net:
+    driver: bridge
