@@ -1,1 +1,125 @@
 ## TRANSBROKER
+
+HTTP-сервис-брокер для асинхронного перевода текстов. Принимает JSON с вложенными строками, публикует каждую строку в NATS для обработки внешними переводчиками, получает результаты через Kafka и возвращает переведённую структуру в исходном формате.
+
+### Архитектура
+
+```
+Client → HTTP /translate → NATS (publish) → Translator workers
+                                ↓
+Client ← HTTP response  ← Kafka (consume) ←
+```
+
+1. Клиент отправляет POST-запрос с JSON, содержащим поле `language` и вложенную структуру `data`.
+2. Сервис «разворачивает» вложенный JSON в плоский список строк, вычисляет SHA256-хеш каждой строки.
+3. Строки, найденные в кэше, возвращаются без обращения к переводчику.
+4. Остальные строки публикуются в NATS. Внешние воркеры-переводчики читают их из NATS, переводят и публикуют результат в Kafka с заголовками `reqId` / `textId`.
+5. Сервис ожидает ответа из Kafka (таймаут — 120 секунд), собирает результат и возвращает переведённую структуру в исходном вложенном формате.
+
+### HTTP API
+
+#### `POST /translate`
+
+Обязательный заголовок: `X-Request-Id` — уникальный идентификатор запроса.
+
+**Запрос:**
+```json
+{
+  "language": "en",
+  "data": {
+    "title": "Привет мир",
+    "section": {
+      "text": "Вложенный текст"
+    }
+  }
+}
+```
+
+**Ответ (200 OK):**
+```json
+{
+  "language": "en",
+  "data": {
+    "title": "Hello world",
+    "section": {
+      "text": "Nested text"
+    }
+  },
+  "statusCode": true,
+  "errorText": ""
+}
+```
+
+**Ответ (400 Bad Request)** — при отсутствии `X-Request-Id`, невалидном JSON или ошибке обработки:
+```json
+{
+  "language": "",
+  "data": {},
+  "statusCode": false,
+  "errorText": "Don't have X-Request-Id"
+}
+```
+
+#### `GET /health`
+
+Проверка работоспособности сервиса.
+
+```json
+{
+  "status": "ok",
+  "uptime": "1h23m45s"
+}
+```
+
+### Настройки
+
+Конфигурация задаётся через переменные окружения или файл `.env`.
+
+| Переменная        | Обязательная | По умолчанию | Описание |
+|-------------------|:---:|:---:|---|
+| `NATS_URL`        | ✓ | — | Адрес NATS-сервера, например `localhost:4222` |
+| `NATS_SUBJECT`    | ✓ | — | NATS subject, в который публикуются задачи на перевод |
+| `KAFKA_URL`       | ✓ | — | Адрес Kafka-брокера, например `localhost:9092` |
+| `KAFKA_TOPIC`     | ✓ | — | Kafka topic, из которого читаются результаты перевода |
+| `HTTP_ADDR`       | ✓ | — | Адрес для HTTP-сервера, например `:8091` или `0.0.0.0` |
+| `HTTP_PORT`       | ✓ | — | Порт HTTP-сервера, например `8091` |
+| `CACHE_MAX_COUNT` | — | `100` | Максимальное количество записей в кэше переводов |
+| `CLEANUP_INTERVAL`| — | `120` | Интервал очистки устаревших записей кэша, в секундах |
+| `DISABLE_CACHE`   | — | `false` | Отключить кэш переводов (`true` / `false`) |
+
+Пример `.env`:
+```env
+NATS_URL="localhost:4222"
+NATS_SUBJECT="notifications"
+KAFKA_URL="localhost:9092"
+KAFKA_TOPIC="myTopic"
+HTTP_ADDR=":"
+HTTP_PORT="8091"
+
+CACHE_MAX_COUNT="100"
+CLEANUP_INTERVAL="30"
+DISABLE_CACHE="false"
+```
+
+### Запуск через Docker Compose
+
+В поставке идут два сервиса-переводчика (`trans-ya-1`, `trans-ya-2`) на базе Yandex Translate. Для них необходимо задать дополнительные переменные:
+
+| Переменная  | Описание |
+|-------------|---|
+| `FOLDER_ID` | ID каталога Yandex Cloud |
+| `API_KEY`   | API-ключ Yandex Translate |
+
+```bash
+cp .env.example .env
+# Заполните .env
+
+docker compose up -d
+```
+
+### Сборка и запуск локально
+
+```bash
+go build -o transbroker ./cmd
+./transbroker
+```
